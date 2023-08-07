@@ -1,0 +1,424 @@
+---
+title: "TK_59: Analysis of piRNA-encoding 3'UTRs"
+author: "Hernan Lorenzi"
+affiliation: "The TriLab Bioinformatics Group, LBG-LCMB-LBC, NIDDK, NIH"
+date: "7/17/2023"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+    theme:
+      bootswatch: flatly
+---
+
+<style type="text/css">
+
+h1.title {
+  font-size: 38px;
+  text-align: center;
+}
+h4.author {
+  font-size: 24px;
+  text-align: center;
+}
+h4.affiliation {
+  font-size: 24px;
+  text-align: center;
+}
+h4.date {
+  font-size: 24px;
+  text-align: center;
+}
+</style>
+
+
+**PI:** PI name\
+**Point of Contact:** Contact name\
+**Contact email:** Contact_name@nih.gov\
+
+**Summary:** From Thenia's email *"To sum up what we discussed yesterday, we hope to systematically check whether the genes that we find upstream of our clusters are really expressed and have a possible alternative poly A signal which creates the longer versions preferably in the embryonic stage (E16.5) and not in later stages (P14). It would be also interesting to check if these genes have something in common."*
+
+### R code
+
+```{r include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning=FALSE, error=FALSE)
+```
+
+### Load libraries
+```{r message=FALSE}
+library(GenomicRanges)
+library(cowplot)
+library(tidyverse)
+library(DGEobj.utils)
+library(GenomicFeatures)
+```
+
+### Useful functions
+```{r}
+
+# This function outputs the total length on non-overlaping exons for each gene
+# See https://www.biostars.org/p/83901/
+get_transcript_sizes_from_gtf <- function(annotation_file, format = 'gtf'){
+  if (format == 'custom'){
+    
+    # Calculate cluster lengths
+    annotation_file$length_bp <- abs(annotation_file$Start - annotation_file$End)
+    annotation_file <- tibble(gene_id = annotation_file$GeneID, 
+                              length_bp = annotation_file$length_bp)
+    # Sum all lengths from clusters associated with the same gene
+    exonic.gene.sizes.tb <- annotation_file %>% 
+                            group_by(gene_id) %>%
+                            summarise(length_bp=sum(length_bp))
+    
+    # Comvert exonic.gene.sizes.tb to a list
+    exonic.gene.sizes <- exonic.gene.sizes.tb$length_bp
+    names(exonic.gene.sizes) <- exonic.gene.sizes.tb$gene_id
+    return(exonic.gene.sizes)
+  }else{
+    # First, import the GTF-file that you have also used as input for htseq-count
+    txdb <- makeTxDbFromGFF(annotation_file, format = format)
+    # then collect the exons per gene id
+    exons.list.per.gene <- exonsBy(txdb,by="gene")
+    # then for each gene, reduce all the exons to a set of non overlapping exons, calculate their lengths (widths) and sum then
+    exonic.gene.sizes <- sum(width(GenomicRanges::reduce(exons.list.per.gene)))
+  }
+  return(exonic.gene.sizes)
+}
+
+# Function to calculate tpm and fpkms
+normalize_by_TPM <- function(read_counts_column, annotation_file, annot_file_format = 'gtf') {
+  
+  transcripts_length <- get_transcript_sizes_from_gtf(annotation_file = annotation_file, 
+                                                      format = annot_file_format)
+  
+  c.tb <- tibble(gene_id = rownames(read_counts_column), 
+                 read_counts = as.vector(read_counts_column[,1]))
+  
+  # Eliminate gene IDs from counts.df without transcript length info in transcript_lengths
+  tl.tb <- tibble(gene_id=names(transcripts_length), length_bp=transcripts_length)
+  tl.tb <- filter(tl.tb, !is.na(length_bp))
+  
+  # Merge read counts and transcript length tibbles
+  merged_tibble <- inner_join(x = c.tb, 
+                              y = tl.tb, 
+                              by = join_by(gene_id))
+  
+  
+  # Calculate TPMs
+  merged_tibble <- merged_tibble %>% 
+                    mutate(reads_per_kb = read_counts * 1000/ length_bp) %>% 
+                    mutate(tpm = reads_per_kb * 1e6 / sum(reads_per_kb))
+  
+  # Calculate FPKMs
+  merged_tibble <- merged_tibble %>% 
+                    mutate(fpkm = read_counts * 1000 * 1e6 / length_bp / sum(read_counts)) 
+  
+  # See reference for formula:
+  # https://www.reneshbedre.com/blog/expression_units.html
+  # https://www.biostars.org/p/273537
+  
+  return(merged_tibble)
+}
+```
+
+
+### Load Granges files
+```{r}
+# NOTE: Granges works with subset() to filter rows by metadata values
+
+#Granges of the piRNA clusters that could come from upstream genes (and the corresponding genes’ names per cluster)
+
+load(file = "./data/Mili_prepach_gene3end_regions.RData")
+
+# Mm10_refGene_all_biotypes_curated_TK : Granges of the Mm10 refGene mouse annotation including both protein- and non-coding genes, after curation (features from transcript variants were collapsed per gene, by prioritizing CDS, then 3’ and 5’ UTRs and lastly introns. The genes that contained CDS, were identified as (possible) protein-coding genes. The non-coding genes contain only exons and introns.)
+load(file = "./data/Mm10_refGene_all_biotypes_curated_TK.RData")
+```
+
+
+### Make bed files for Mm10_refGene_all_biotypes_curated_TK for 
+The idea is to merge contiguous features to form exons, excluding intron coords.
+```{r}
+# just make a smaller name removin intron features
+coding_curated_ann <-subset(Mm10_refGene_all_biotypes_curated_TK, type != 'INTRON')
+coding_curated_bed <- tibble(Chr=as.vector(seqnames(coding_curated_ann)), 
+                      Start=start(coding_curated_ann)-1, # to be bed compliant
+                      End=end(coding_curated_ann),
+                      Type=as.vector(coding_curated_ann$type),
+                      GeneID=as.vector(coding_curated_ann$gene_name),
+                      Strand=as.vector(strand(coding_curated_ann))
+                      )
+write.table(coding_curated_bed, file = "coding_curated.bed", sep = "\t", col.names = F, quote = F, row.names = F)
+```
+
+
+### Write list of genes of interest
+```{r}
+write.table(unlist(Mili_prepach_gene3end_regions$Gene_ovrlp), file = "genes_of_interest.txt", sep = "\t", col.names = F, quote = F, row.names = F)
+```
+
+### Generate bed file for clusters
+```{r}
+clust_bed <- as.data.frame(paste(seqnames(Mili_prepach_gene3end_regions),
+            start(Mili_prepach_gene3end_regions),
+            end(Mili_prepach_gene3end_regions),
+            Mili_prepach_gene3end_regions$uniq_reads_FPM,
+            round(Mili_prepach_gene3end_regions$fraction_of_width_covered_by_unique_alignments, digits = 3),
+            strand(Mili_prepach_gene3end_regions)
+            )
+          )
+
+colnames(clust_bed) <- c('data')
+write.table(clust_bed, file = "clusters.bed", sep = "\t", col.names = F, quote = F, row.names = F)
+```
+
+### Count reads per gene for Ensemble and RefSeq annotations
+```{r}
+library(Rsubread)
+```
+
+### Count reads per feature
+```{r message=FALSE}
+# mm10.ncbiRefSeq.transcripts.THENIA.gtf contains only the transcripts from 
+# Thenia's file mm10.refGene.gtf, which has only the longest transcript per gene
+P14.refseq.counts <- featureCounts(files = "./P14.PS.SRR7760359.mappedAligned.sortedByCoord.out.bam", annot.ext = "./mm10.ncbiRefSeq.transcripts.THENIA.gtf", isGTFAnnotationFile = T, GTF.featureType = "exon", GTF.attrType = "gene_id", useMetaFeatures = T, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+
+P14.ensembl.counts <- featureCounts(files = "./P14.PS.SRR7760359.mappedAligned.sortedByCoord.out.bam", annot.ext = "./Mus_musculus.GRCm38.102.gtf", isGTFAnnotationFile = T, GTF.featureType = "exon", GTF.attrType = "gene_id", useMetaFeatures = T, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+
+E16.refseq.counts <- featureCounts(files = "./E16.5.total_SRR11916388.shortened.mappedAligned.sortedByCoord.out.bam", annot.ext = "./mm10.ncbiRefSeq.transcripts.THENIA.gtf", isGTFAnnotationFile = T, GTF.featureType = "exon", GTF.attrType = "gene_id", useMetaFeatures = T, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+
+E16.ensembl.counts <- featureCounts(files = "./E16.5.total_SRR11916388.shortened.mappedAligned.sortedByCoord.out.bam", annot.ext = "./Mus_musculus.GRCm38.102.gtf", isGTFAnnotationFile = T, GTF.featureType = "exon", GTF.attrType = "gene_id", useMetaFeatures = T, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+
+```
+
+```{r}
+genes_of_interest <- unlist(Mili_prepach_gene3end_regions$Gene_ovrlp)
+subset(P14.refseq.counts$counts, rownames(P14.refseq.counts$counts) %in% genes_of_interest)
+
+```
+
+## Normalize read counts
+```{r}
+
+P14.counts <- normalize_by_TPM(read_counts_column = P14.refseq.counts$counts,
+                               annotation_file = "./mm10.ncbiRefSeq.transcripts.gtf", 
+                               annot_file_format = 'gtf')
+
+E16.counts <- normalize_by_TPM(read_counts_column = E16.refseq.counts$counts,
+                               annotation_file = "./mm10.ncbiRefSeq.transcripts.gtf", 
+                               annot_file_format = 'gtf')
+
+
+```
+
+### Subset genes of interest
+```{r}
+P14.counts.GoI <- filter(P14.counts, gene_id %in% genes_of_interest) %>% mutate (group = "P14.GoI")
+P14.counts.not_GoI <- filter(P14.counts, ! gene_id %in% genes_of_interest) %>% mutate (group = "P14.not_GoI")
+E16.counts.GoI <- filter(E16.counts, gene_id %in% genes_of_interest) %>% mutate (group = "E16.GoI")
+E16.counts.not_GoI <- filter(E16.counts, ! gene_id %in% genes_of_interest) %>% mutate (group = "E16._not_GoI")
+
+# Append all tibbles
+combined_counts <- rbind(P14.counts.GoI,P14.counts.not_GoI,E16.counts.GoI,E16.counts.not_GoI)
+```
+
+### Plot correlation GoI between P14 and E16
+```{r}
+library(ggplot2)
+library(ggpubr)
+
+dir.create(path = "./Plots", showWarnings = F)
+
+join_counts <- inner_join(x = E16.counts.GoI, y = P14.counts.GoI, by = "gene_id")
+
+p1 <- join_counts %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "E16 GoI FPKMs (Log10)",
+                                ylab = "P14 GoI FPKMs (Log10)", 
+                                size = 0.5, 
+                                shape = 20, palette = "viridis",
+                                add = "reg.line"
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+                       
+ggsave2(filename = "E16Int_vs_P14Int_FPKM_corr.pdf", plot = p1, path = "./Plots")
+p1
+
+my_comparisons <- list( c("E16.GoI","E16._not_GoI"), c("P14.GoI", "P14.not_GoI"))
+
+p2 <- combined_counts %>% ggviolin(x="group", 
+                                  y="tpm", 
+                                  fill="group", 
+                                  draw_quantiles = T,
+                                  add = "boxplot") + 
+                                  stat_compare_means(comparisons = my_comparisons) +
+                                  scale_y_log10() 
+
+ggsave2(filename = "Int_vs_nonInt_genes_per_group.pdf", plot = p2, path = "./Plots")
+p2
+
+```
+
+# Make cluster expression tibble
+```{r}
+clust_expr_fpkm.tb <-  tibble(gene_id=sapply(M$Gene_ovrlp,"[[",1), fpkm=M$all_reads_primary_alignments_FPKM)
+
+E16.counts.GoI_clust <- inner_join(x = E16.counts.GoI, y = clust_expr_fpkm.tb, by = "gene_id") %>% mutate(group = 'E16')
+
+P14.counts.GoI_clust <- inner_join(x = P14.counts.GoI, y = clust_expr_fpkm.tb, by = "gene_id") %>% mutate(group = 'P14')
+
+
+e16.p <- E16.counts.GoI_clust %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "E16 genes of Interest FPKM (log10)",
+                                ylab = "cluster all reads primary FPKM (log10)", 
+                                size = 0.5, 
+                                shape = 20, palette = "jco",
+                                add = "reg.line", color = "group"
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+
+p14.p <- P14.counts.GoI_clust %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "P14 genes of Interest FPKM (log10)",
+                                ylab = "cluster all reads primary FPKM (log10)", 
+                                size = 0.5, 
+                                shape = 20, palette = "jco",
+                                add = "reg.line", color = "group"
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+
+ggsave2(filename = "E16Int_vs_clusters.pdf", plot = e16.p, path = "./Plots")
+ggsave2(filename = "P14Int_vs_clusters.pdf", plot = p14.p, path = "./Plots")
+
+e16.p
+p14.p
+
+E16_P14.counts.GoI_clust <- rbind(E16.counts.GoI_clust, P14.counts.GoI_clust)
+
+e16p14.p <- E16_P14.counts.GoI_clust %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "genes of Interest FPKM (log10)",
+                                ylab = "cluster all reads primary FPKM (log10)", 
+                                size = 0.5, 
+                                shape = 20, palette = "jco",
+                                color = "group"
+                                ) + scale_x_log10() + scale_y_log10()
+
+ggsave2(filename = "E16P14Int_vs_clusters.pdf", plot = e16p14.p, path = "./Plots")
+e16p14.p
+```
+
+
+### Quantify RNAseq-based expression at cluster's intervals
+```{r}
+# Make annotation DF
+ann.df <- tibble(GeneID=sapply(M$Gene_ovrlp,"[[",1), 
+                 Chr=as.vector(seqnames(M)), 
+                 Start=start(M),
+                 End=end(M),
+                 Strand=as.vector(strand(M))
+                 )
+
+# Count reads per meta-feature
+P14.cluster.counts <- featureCounts(files = "./P14.PS.SRR7760359.mappedAligned.sortedByCoord.out.bam", annot.ext = as.data.frame(ann.df), isGTFAnnotationFile = F, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+
+E16.cluster.counts <- featureCounts(files = "./E16.5.total_SRR11916388.shortened.mappedAligned.sortedByCoord.out.bam", annot.ext = ann.df, isGTFAnnotationFile = F, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 0, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+```
+
+### Normalize cluster's read counts 
+```{r}
+P14.cluster.norm.counts <- normalize_by_TPM(read_counts_column = P14.cluster.counts$counts,
+                               annotation_file = ann.df, 
+                               annot_file_format = 'custom')
+
+E16.cluster.norm.counts <- normalize_by_TPM(read_counts_column = E16.cluster.counts$counts,
+                               annotation_file = ann.df, 
+                               annot_file_format = 'custom')
+# Merge cluster expression tibble with long-RNAseq-cluster norm counts
+P14.counts.long_short_clust <- inner_join(x = P14.cluster.norm.counts, y = clust_expr_fpkm.tb, by = "gene_id") %>% mutate(group = 'P14')
+
+E16.counts.long_short_clust <- inner_join(x = E16.cluster.norm.counts, y = clust_expr_fpkm.tb, by = "gene_id") %>% mutate(group = 'E16')
+```
+
+### Plot correlations between long-RNAseq-based clusters and short-RNAseq-based clusters
+```{r}
+# Plot correlations
+p14.clust_vs_clust.p1 <- P14.counts.long_short_clust %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "P14 long-RNAseq cluster FPKM (log10)",
+                                ylab = "short-RNAseq cluster all reads primary FPKM (log10)", 
+                                size = 0.5, 
+                                shape = 20, palette = "jco",
+                                add = "reg.line", color = "group"
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+                       
+
+e16.clust_vs_clust.p1 <- E16.counts.long_short_clust %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "E16 long-RNAseq cluster FPKM (log10)",
+                                ylab = "short-RNAseq cluster all reads primary FPKM (log10)", 
+                                size = 0.5, 
+                                shape = 20, palette = "jco",
+                                add = "reg.line", color = "group"
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+                       
+# Append E16 and P14 tibbles
+E16_P14.counts.long_short_clust <- rbind(E16.counts.long_short_clust, P14.counts.long_short_clust)
+
+e16p14.clust_vs_clust.p1 <- E16_P14.counts.long_short_clust %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "long-RNAseq cluster FPKM (log10)",
+                                ylab = "short-RNAseq cluster all reads primary FPKM (log10)", 
+                                size = 0.5, 
+                                shape = 20, palette = "jco",
+                                color = "group"
+                                ) + scale_x_log10() + scale_y_log10()
+
+ggsave2(filename = "P14_long_vs_short_clust.pdf", plot = p14.clust_vs_clust.p1, path = "./Plots")
+ggsave2(filename = "E16_long_vs_short_clust.pdf", plot = e16.clust_vs_clust.p1, path = "./Plots")
+ggsave2(filename = "E16P14_long_vs_short_clust.pdf", plot = e16p14.clust_vs_clust.p1, path = "./Plots")
+
+p14.clust_vs_clust.p1
+e16.clust_vs_clust.p1
+e16p14.clust_vs_clust.p1
+```
+
+### Correlation between long-RNAseq genes and long-RNAseq clusters
+```{r}
+p14_long_genes_clusters <- inner_join(x = P14.counts, y = P14.cluster.norm.counts, by = "gene_id") %>% mutate(group = 'P14')
+
+e16_long_genes_clusters <- inner_join(x = E16.counts, y = E16.cluster.norm.counts, by = "gene_id") %>% mutate(group = 'E16')
+```
+
+### Plots
+```{r}
+p14.long_genes_clusters.p1 <- p14_long_genes_clusters %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "P14 long-RNAseq genes FPKM (log10)",
+                                ylab = "P14 long-RNAseq cluster FPKM (log10)", 
+                                size = 0.5, 
+                                shape = 20, palette = "jco",
+                                add = "reg.line", color = "group"
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+
+e16.long_genes_clusters.p1 <- e16_long_genes_clusters %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "E16 long-RNAseq genes FPKM (log10)",
+                                ylab = "E16 long-RNAseq cluster FPKM (log10)", 
+                                size = 0.5, 
+                                shape = 20, palette = "jco",
+                                add = "reg.line", color = "group"
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+
+ggsave2(filename = "P14_long_genes_clusters.pdf", plot = p14.long_genes_clusters.p1, path = "./Plots", width = 12)
+ggsave2(filename = "E16_long_genes_clusters.pdf", plot = e16.long_genes_clusters.p1, path = "./Plots")
+
+p14.long_genes_clusters.p1
+e16.long_genes_clusters.p1
+
+```
+
+### R session information
+```{r}
+sessionInfo()
+```
+
+
+

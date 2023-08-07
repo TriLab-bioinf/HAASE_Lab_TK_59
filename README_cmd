@@ -1,0 +1,4 @@
+igvtools sort E16.5.name_aptardi.gtf E16.5.name_aptardi.sorted.gtf
+
+igvtools index E16.5.name_aptardi.sorted.gtf
+
