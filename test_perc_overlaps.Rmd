@@ -1,0 +1,337 @@
+---
+title: "TK_59: Optimize ARTDeco parameters"
+author: "Hernan Lorenzi"
+affiliation: "The TriLab Bioinformatics Group, LBG-LCMB-LBC, NIDDK, NIH"
+date: "8/24/2023"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+    theme:
+      bootswatch: flatly
+---
+
+```{=html}
+<style type="text/css">
+
+h1.title {
+  font-size: 38px;
+  text-align: center;
+}
+h4.author {
+  font-size: 24px;
+  text-align: center;
+}
+h4.affiliation {
+  font-size: 24px;
+  text-align: center;
+}
+h4.date {
+  font-size: 24px;
+  text-align: center;
+}
+</style>
+```
+**PI:** Astrid Haase\
+**Point of Contact:** Parthena Konstantinidou\
+**Contact email:** parthena.konstantinidou@nih.gov\
+
+**Summary:** Project summary.
+
+### R code
+
+```{r include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning=FALSE, error=FALSE)
+```
+
+### Load libraries
+
+```{r}
+library(GenomicRanges)
+library(ballgown)
+library(tidyverse)
+```
+
+
+```{r}
+# Function to filter granges object by chromosome and strand
+filter_cy_chr_strand <- function(gr.obj, chr, strd){
+  
+    gr.obj <- gr.obj[seqnames(gr.obj) == chr & strand(gr.obj) == strd]
+    
+    if( length(
+          seqnames(
+            gr.obj[seqnames(gr.obj) == chr & strand(gr.obj) == strd]
+            )
+          ) > 0){
+      print("OK")
+      
+    } else {
+      #### Need to create a fake interval that do not overlap with the annotated exons for this chromosome
+      gr.obj <- GRanges(seqnames = chr, strand = c(strd),
+              ranges = IRanges(start = c(1), width = 3))
+    }
+    
+    return(gr.obj)
+  
+}
+
+# Function to calculate percen overlap of two granges objects
+get_cluster_dog_perc_overlap <- function(clusters.gr, dog.gr, min_dog_len=NA, window=NA, min_fpkm=NA, min_dog_cov=NA, strand_specific='not_specific', dir_name){
+  
+  perc_overlap.df <- tibble(Chromosome = character(), Strand = character(), Perc_overlap = numeric(), min_DOG_len = 
+                            numeric(), Window = numeric(), min_FPKM = numeric(), 
+                            min_DOG_cov = numeric(), Strand_specific=strand_specific, Dir_name=character())
+  
+  total_perc_overlap <- 0
+  
+  for (my_chr in unique(seqnames(clusters.gr))){
+    for (strand in c("+","-")){
+      dog.gr.subset <- filter_cy_chr_strand(gr.obj=dog.gr, 
+                                               chr=my_chr, strd=strand)
+      clusters.gr.subset <- filter_cy_chr_strand(gr.obj=clusters.gr, 
+                                                    chr=my_chr, strd=strand)
+      
+      # Check if any of the GRs is empty
+      
+      # Calculate percent overlap
+      perc_overlap <- pctOverlap(clusters.gr.subset, dog.gr.subset)
+      total_perc_overlap <- total_perc_overlap + perc_overlap
+      
+      perc_overlap.df <- perc_overlap.df %>%  add_row(Chromosome=my_chr, 
+                                                        Strand=strand, 
+                                                        Perc_overlap=perc_overlap, 
+                                                        min_DOG_len=min_dog_len, 
+                                                        Window=window,
+                                                        min_FPKM=min_fpkm,
+                                                        min_DOG_cov=min_dog_cov,
+                                                        Strand_specific=strand_specific,
+                                                        Dir_name=dir_name)
+      
+      #print(paste("chr =",my_chr, "STRAND =",strand,"perc_overlap =", perc_overlap))
+    }
+    
+  }
+  return(perc_overlap.df %>% mutate(Total_perc_overlap=total_perc_overlap))
+}
+
+# Function to import DOG bed files
+import_dog <- function(dog_bed_file){
+  # Load dog bed file
+  dog <- read.delim(file = dog_bed_file, sep = "\t", header = FALSE, 
+                    col.names = c( "Chromosome", "Start", "End","Gene_name","Score","Strand"))
+  
+  # Convert dog to Granges
+  return(makeGRangesFromDataFrame(dog))
+
+}
+
+# Function to extract ARTDeco parameter from output directory name
+
+# Dir name should follow the convention below:
+# ARTDECO_DIR_FPKM_0.003_MDL_2000_WIN_500_MDC_0.05_STD_NS
+
+get_parameters_from_dir_name <- function(dir){
+  my_params <- list()
+  my_params["min_dog_len"] <-  as.numeric(gsub("ARTDECO_DIR.*_MDL_([0-9]+)_.*","\\1", dir, perl = TRUE)) # (bp)
+  my_params["window"] <-  as.numeric(gsub("ARTDECO_DIR.*_WIN_([0-9]+)_.*","\\1", dir, perl = TRUE)) # (bp)
+  my_params["min_fpkm"] <- as.numeric(gsub("ARTDECO_DIR.*_FPKM_([0-9]*.?[0-9]+)_.*","\\1", dir, perl = TRUE)) 
+  my_params["min_dog_cov"] <- as.numeric(gsub("ARTDECO_DIR.*_MDC_([0-9]*.?[0-9]+)_.*","\\1", dir, perl = TRUE))
+  my_params["Strand_specific"] <- gsub("ARTDECO_DIR.*_STD_(NS|S).*","\\1", dir, perl = TRUE) # "NS" | "S"
+  return(my_params)
+}
+```
+
+
+```{r}
+artdeco_dirs <- dir()[grep(pattern = 'ARTDECO_DIR_FPKM_.*_MDL_.*_MDC_.*_WIN_.*_S', dir(), perl = TRUE)]
+
+```
+ 
+
+
+```{r}
+# Initialize result's tibble
+my_res.E16.df <- tibble(Chromosome = character(), Strand = character(), Perc_overlap = numeric(), 
+                    min_DOG_len = numeric(), Window = numeric(), min_FPKM = numeric(), 
+                    min_DOG_cov = numeric(), Strand_specific = character(),
+                    Total_perc_overlap = numeric(), Dir_name = character())
+
+my_res.P14.df <- tibble(Chromosome = character(), Strand = character(), Perc_overlap = numeric(), 
+                    min_DOG_len = numeric(), Window = numeric(), min_FPKM = numeric(), 
+                    min_DOG_cov = numeric(), Strand_specific = character(),
+                    Total_perc_overlap = numeric(), Dir_name = character())
+
+# Load clusters
+load(file = "./data/Mili_prepach_gene3end_regions.RData")
+clusters.gr <- Mili_prepach_gene3end_regions
+
+for (dir in artdeco_dirs){
+  print(dir)
+  
+  # Set ARTDeco output directory
+  ARTDeco_dir <- dir # "ARTDECO_DIR_FPKM_0.01_MDL_2000_MDC_0.05_WIN_500_S"
+  
+  # Fetch ARTDeco parameter from ARTDeco output dir name
+  artdeco_params <- get_parameters_from_dir_name(dir = ARTDeco_dir)
+  
+  # Load dog bed file
+  my_dog_file.E16 =  paste0("./",ARTDeco_dir,"/dogs/E16.dogs.bed")
+  my_dog_file.P14 =  paste0("./",ARTDeco_dir,"/dogs/P14.dogs.bed")
+  
+  if (file.exists(my_dog_file.E16) & file.exists(my_dog_file.P14) ){
+  
+    dog.E16.gr <- import_dog(dog_bed_file = paste0("./",ARTDeco_dir,"/dogs/E16.dogs.bed"))
+    dog.P14.gr <- import_dog(dog_bed_file = paste0("./",ARTDeco_dir,"/dogs/P14.dogs.bed"))
+    
+    
+    my_res.E16.df <- my_res.E16.df %>% bind_rows(get_cluster_dog_perc_overlap(clusters.gr = clusters.gr, 
+                                                                      dog.gr = dog.E16.gr, 
+                                                                      min_dog_len = artdeco_params$min_dog_len, 
+                                                                      window = artdeco_params$window, 
+                                                                      min_fpkm = artdeco_params$min_fpkm, 
+                                                                      min_dog_cov = artdeco_params$min_dog_cov,
+                                                                      dir_name = ARTDeco_dir))
+    my_res.P14.df <- my_res.P14.df %>% bind_rows(get_cluster_dog_perc_overlap(clusters.gr = clusters.gr, 
+                                                                      dog.gr = dog.P14.gr, 
+                                                                      min_dog_len = artdeco_params$min_dog_len, 
+                                                                      window = artdeco_params$window, 
+                                                                      min_fpkm = artdeco_params$min_fpkm, 
+                                                                      min_dog_cov = artdeco_params$min_dog_cov,
+                                                                      dir_name = ARTDeco_dir))
+  }
+}
+
+```
+
+```{r}
+write.csv(x = my_res.E16.df, file = "ARTDeco_runs_summary_E16.csv")
+my_res_BEST.E16.df <- my_res.E16.df[order(my_res.E16.df$Total_perc_overlap, decreasing = T),] %>% head(n=1)
+my_res_BEST.E16.df$Dir_name
+
+write.csv(x = my_res.P14.df, file = "ARTDeco_runs_summary_P14.csv")
+my_res_BEST.P14.df <- my_res.P14.df[order(my_res.P14.df$Total_perc_overlap, decreasing = T),] %>% head(n=1)
+my_res_BEST.P14.df$Dir_name
+```
+
+```{r}
+filter(my_res.P14.df, Dir_name=="ARTDECO_DIR_FPKM_0.25_MDL_2000_MDC_0.05_WIN_500_S")
+```
+
+### Quantify total number of predicted DOGs per developmental stage
+```{r}
+my_predictions_dir <- my_res_BEST.E16.df$Dir_name
+e16.tbl <- read_delim(file = paste0("./",my_predictions_dir,"/dogs/E16.dogs.bed"), col_names = c("Chrom","End5","End3","Gene","Score","Strand"))
+p14.tbl <- read_delim(file = paste0("./",my_predictions_dir,"/dogs/P14.dogs.bed"), col_names = c("Chrom","End5","End3","Gene","Score","Strand"))
+
+e16.tbl <- e16.tbl %>% mutate(Dev_stage = "E16")
+p14.tbl <- p14.tbl %>% mutate(Dev_stage = "P14")
+
+all.tbl <- e16.tbl %>% bind_rows(p14.tbl)
+all.tbl <- all.tbl %>% mutate(Length=End3-End5)
+```
+
+
+### Fig 1: Number of predicted DOGs
+```{r}
+library(ggpubr)
+library(cowplot)
+
+dir.create("./Plots", showWarnings = F)
+
+p1 <- all.tbl %>% group_by(Dev_stage) %>% count() %>% 
+  ggbarplot(x="Dev_stage", y="n", ylab = "Number of predicted DOGs", xlab = "Developmental stage", 
+            palette = c("#f26161","#61C200"), fill = "Dev_stage", ggtheme = theme_classic())
+
+ggsave2(filename = "./Plots/Fig_1.pdf", plot = p1, width = 5)
+p1
+```
+
+### Fig 2: Total span of predicted DOGs
+```{r}
+p2 <- all.tbl %>% group_by(Dev_stage) %>% dplyr::summarize(Total_length=sum(Length)/1e6) %>% 
+  ggbarplot(x="Dev_stage", y="Total_length", ylab = "Total length of predicted DOGs (Mb)", xlab = "Developmental stage", palette = c("#f26161","#61C200"), fill = "Dev_stage", ggtheme = theme_classic())
+
+ggsave2(filename = "./Plots/Fig_2.pdf", plot = p2, width = 5)
+p2
+
+```
+
+### Fig 3: BAM file stats
+```{r}
+# Samtools' flagstat values from E16 and P14 bam files
+bam <- tibble(Dev_stage=c("P14","E16"),Total_reads=c(29383212,30692328), Primary=c(24325297,21109246), Secondary=c(5057915,9583082), Mapped=c(29383212,30692328), Paired=c(24325297,21109246), Read_1=c(12162503,10554623), Read_2=c(12162794,10554623), Properly_paired=c(24325006,21109246), Singletons=c(291,0))
+
+# Collapse column values into a single column.
+bam.stats <- bam %>% gather(key = "Flagstat", value = "Counts", -Dev_stage)
+
+p3 <- bam.stats %>% ggbarplot(x="Dev_stage", 
+                        y="Counts", 
+                        ylab = "Read counts", 
+                        xlab = "Developmental stage", 
+                        palette = c("#f26161","#61C200"), 
+                        fill = "Dev_stage", 
+                        ggtheme = theme_classic(),
+                        facet.by="Flagstat"
+                        )
+ggsave2(filename = "./Plots/Fig_3.pdf", plot = p3, width = 5)
+p3
+```
+### Fig 4: Number of predicted DOGs per chromosome
+```{r}
+p4 <- all.tbl %>% group_by(Dev_stage, Chrom) %>% count() %>% 
+  ggbarplot(x="Dev_stage", y="n", ylab = "Number of predicted DOGs", xlab = "Developmental stage", 
+            palette = c("#f26161","#61C200"), fill = "Dev_stage", ggtheme = theme_classic(), facet.by = "Chrom")
+
+ggsave2(filename = "./Plots/Fig_4.pdf", plot = p4, width = 5)
+p4
+```
+
+
+### Fig 5: Normalized counts of predicted DOGs per chromosome
+```{r}
+total_counts <- list()
+e16_total_dog_counts <- filter(all.tbl %>% group_by(Dev_stage) %>% count(), Dev_stage=="E16")$n
+p14_total_dog_counts <- filter(all.tbl %>% group_by(Dev_stage) %>% count(), Dev_stage=="P14")$n
+total_counts['E16'] <- e16_total_dog_counts
+total_counts['P14'] <- p14_total_dog_counts
+
+p5 <- all.tbl %>% group_by(Dev_stage, Chrom) %>% count() %>% mutate(Total_counts = total_counts[[Dev_stage]]) %>% mutate(Norm_counts = 100 * (n/Total_counts)) %>% 
+  ggbarplot(x="Dev_stage", y="Norm_counts", ylab = "Normalized number of predicted DOGs", xlab = "Developmental stage", 
+            palette = c("#f26161","#61C200"), fill = "Dev_stage", ggtheme = theme_classic(), facet.by = "Chrom")
+
+ggsave2(filename = "./Plots/Fig_5.pdf", plot = p5, width = 5)
+p5
+```
+
+### Fig 6: Number of predicted DOGs colored by DOG size (Kb)
+```{r}
+
+all.bins.tbl <- all.tbl %>% mutate(Size_bins=round(Length/1000, digits = 0)+1) %>%
+            group_by(Dev_stage, Size_bins) %>% 
+            count() %>% 
+            mutate(Bins_Kb = ifelse(Size_bins < 11, as.character(Size_bins), ifelse(Size_bins < 51,"11-50","> 50")) )
+
+all.bins.df <- as.data.frame(all.bins.tbl)
+all.bins.df$Bins_Kb <- factor(all.bins.df$Bins_Kb,  levels = c("> 50", "11-50", "10","9","8","7","6","5","4","3","2","1"))
+
+p6 <- ggplot(all.bins.df, aes(x = Dev_stage, y = n, fill = Bins_Kb, col = Bins_Kb)) + 
+        geom_bar(position = "fill",stat = "identity") +
+        scale_y_continuous(labels = scales::percent_format()) +
+        ylab("Number of predicted DOGs grouped by DOG length") +
+        xlab("Developmental stage") +
+        theme_classic()
+
+
+ggsave2(filename = "./Plots/Fig_6.pdf", plot = p6, width = 5)
+p6
+```
+
+
+
+
+### R session information
+
+```{r}
+sessionInfo()
+```

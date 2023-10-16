@@ -2,13 +2,13 @@
 title: "TK_59: Analysis of piRNA-encoding 3'UTRs"
 author: "Hernan Lorenzi"
 affiliation: "The TriLab Bioinformatics Group, LBG-LCMB-LBC, NIDDK, NIH"
-date: "7/17/2023"
+date: "10/04/2023"
 output:
-  pdf_document: default
   html_document:
     df_print: paged
     theme:
       bootswatch: flatly
+  pdf_document: default
 ---
 
 <style type="text/css">
@@ -32,28 +32,38 @@ h4.date {
 </style>
 
 
-**PI:** PI name\
-**Point of Contact:** Contact name\
-**Contact email:** Contact_name@nih.gov\
+**PI:** Astrid Haase\
+**Point of Contact:** Parthena Konstantinidou\
+**Contact email:** parthena.konstantinidou@nih.gov\
 
 **Summary:** From Thenia's email *"To sum up what we discussed yesterday, we hope to systematically check whether the genes that we find upstream of our clusters are really expressed and have a possible alternative poly A signal which creates the longer versions preferably in the embryonic stage (E16.5) and not in later stages (P14). It would be also interesting to check if these genes have something in common."*
 
-### R code
+#### R code
 
 ```{r include=FALSE}
 knitr::opts_chunk$set(message = FALSE, warning=FALSE, error=FALSE)
+knitr::opts_chunk$set(cache = TRUE)
 ```
 
-### Load libraries
+#### Load libraries
 ```{r message=FALSE}
 library(GenomicRanges)
 library(cowplot)
 library(tidyverse)
 library(DGEobj.utils)
 library(GenomicFeatures)
+library(scales)
 ```
 
-### Useful functions
+#### Load environment, if exists
+```{r}
+if( file.exists("./data/tk_59_environment.Rdata") ){
+  load(file = "./data/tk_59_environment.Rdata")
+}
+```
+
+
+#### Useful functions
 ```{r}
 
 # This function outputs the total length on non-overlaping exons for each gene
@@ -121,8 +131,41 @@ normalize_by_TPM <- function(read_counts_column, annotation_file, annot_file_for
 }
 ```
 
+#### Run samtools' stats on bam files
+```{r, eval=FALSE, include=TRUE}
+library(parseR) # For running samtools flagstat
+if(! exists("E16_5.bam.flagstat")){
+  E16_5.bam.flagstat <- run_samflagstat(samtools="/Users/lorenziha/miniconda3/envs/ARTDeco/bin/samtools",
+                                        bamfile = "./NEW_ARTDECO_ANALYSIS/ARTDeco_input/E16_5.bam")
+}
+if(! exists("P14.bam.flagstat")){
+  P14.bam.flagstat <- run_samflagstat(samtools="/Users/lorenziha/miniconda3/envs/ARTDeco/bin/samtools",
+                                        bamfile = "./NEW_ARTDECO_ANALYSIS/ARTDeco_input/P14.bam")
+}
+if(! exists("P42.bam.flagstat")){
+  P42.bam.flagstat <- run_samflagstat(samtools="/Users/lorenziha/miniconda3/envs/ARTDeco/bin/samtools",
+                                        bamfile = "./NEW_ARTDECO_ANALYSIS/ARTDeco_input/P42.bam")
+}
 
-### Load Granges files
+# Group flagstat results
+flagstat <- rbind(t(P42.bam.flagstat), t(P14.bam.flagstat), t(E16_5.bam.flagstat))
+rownames(flagstat) <- str_remove(string = rownames(flagstat), pattern = "./NEW_ARTDECO_ANALYSIS/ARTDeco_input/")
+colnames(flagstat) <- c("Total-mapped","Passed-QC","Secondary","Supplementary","Duplicates","Mapped","Paired","Read-1","Read-2","Proper-pair","Both-mates-mapped","Singleton-mapped","Mate-map-diff-chr", "Mate-map-diff-chr_MAPQ_bt_5")
+
+flagstat.tbl <- tibble("Total-mapped"=flagstat[,"Total-mapped"],"Passed-QC"=flagstat[,"Passed-QC"],"Secondary"=flagstat[,"Secondary"],"Supplementary"=flagstat[,"Supplementary"],"Duplicates"=flagstat[,"Duplicates"],"Mapped"=flagstat[,"Mapped"],"Paired"=flagstat[,"Paired"],"Read-1"=flagstat[,"Read-1"],"Read-2"=flagstat[,"Read-2"],"Proper-pair"=flagstat[,"Proper-pair"],"Both-mates-mapped"=flagstat[,"Both-mates-mapped"],"Singleton-mapped"=flagstat[,"Singleton-mapped"],"Mate-map-diff-chr"=flagstat[,"Mate-map-diff-chr"], "Mate-map-diff-chr_MAPQ_bt_5"=flagstat[,"Mate-map-diff-chr_MAPQ_bt_5"]) %>% mutate(bam_file = c("P42.bam","P14.bam","E16_5.bam"))
+
+flagstat.tbl<- gather(data = flagstat.tbl, key = bam_file) %>% mutate( bam = rep(c("P42","P14","E16_5"), 14))
+
+# Generate barchar plots
+flagstat.p <- flagstat.tbl %>% ggplot(aes(bam, value, fill=bam)) + geom_bar(stat="identity") + facet_wrap(~bam_file, dir="h", strip.position="top") + theme_bw() + xlab("BAM files") + ylab("Counts") + scale_fill_viridis_d(option = "D")
+
+ggsave2(filename = "./Plots/bamstats_1.pdf", plot = flagstat.p)
+flagstat.p
+
+
+```
+
+#### Load Granges files
 ```{r}
 # NOTE: Granges works with subset() to filter rows by metadata values
 
@@ -135,10 +178,10 @@ load(file = "./data/Mm10_refGene_all_biotypes_curated_TK.RData")
 ```
 
 
-### Make bed files for Mm10_refGene_all_biotypes_curated_TK for 
+#### Make bed files for Mm10_refGene_all_biotypes_curated_TK
 The idea is to merge contiguous features to form exons, excluding intron coords.
 ```{r}
-# just make a smaller name removin intron features
+# just make a smaller name removing intron features
 coding_curated_ann <-subset(Mm10_refGene_all_biotypes_curated_TK, type != 'INTRON')
 coding_curated_bed <- tibble(Chr=as.vector(seqnames(coding_curated_ann)), 
                       Start=start(coding_curated_ann)-1, # to be bed compliant
@@ -151,12 +194,12 @@ write.table(coding_curated_bed, file = "coding_curated.bed", sep = "\t", col.nam
 ```
 
 
-### Write list of genes of interest
+#### Write list of genes of interest
 ```{r}
 write.table(unlist(Mili_prepach_gene3end_regions$Gene_ovrlp), file = "genes_of_interest.txt", sep = "\t", col.names = F, quote = F, row.names = F)
 ```
 
-### Generate bed file for clusters
+#### Generate bed file for clusters
 ```{r}
 clust_bed <- as.data.frame(paste(seqnames(Mili_prepach_gene3end_regions),
             start(Mili_prepach_gene3end_regions),
@@ -171,28 +214,33 @@ colnames(clust_bed) <- c('data')
 write.table(clust_bed, file = "clusters.bed", sep = "\t", col.names = F, quote = F, row.names = F)
 ```
 
-### Count reads per gene for Ensemble and RefSeq annotations
+#### Count reads per gene for Ensemble and RefSeq annotations
 ```{r}
 library(Rsubread)
 ```
 
-### Count reads per feature
-```{r message=FALSE}
+#### Count reads per feature
+```{r message=FALSE, warning=FALSE, include=FALSE, eval=TRUE}
 # mm10.ncbiRefSeq.transcripts.THENIA.gtf contains only the transcripts from 
 # Thenia's file mm10.refGene.gtf, which has only the longest transcript per gene
-P14.refseq.counts <- featureCounts(files = "./P14.PS.SRR7760359.mappedAligned.sortedByCoord.out.bam", annot.ext = "./mm10.ncbiRefSeq.transcripts.THENIA.gtf", isGTFAnnotationFile = T, GTF.featureType = "exon", GTF.attrType = "gene_id", useMetaFeatures = T, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+if(!exists("P14.refseq.counts")){
+  P14.refseq.counts <- featureCounts(files = "./NEW_ARTDECO_ANALYSIS/ARTDeco_input/P14.bam", annot.ext = "./mm10.ncbiRefSeq.transcripts.THENIA.gtf", isGTFAnnotationFile = T, GTF.featureType = "exon", GTF.attrType = "gene_id", useMetaFeatures = T, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+}
 
-P14.ensembl.counts <- featureCounts(files = "./P14.PS.SRR7760359.mappedAligned.sortedByCoord.out.bam", annot.ext = "./Mus_musculus.GRCm38.102.gtf", isGTFAnnotationFile = T, GTF.featureType = "exon", GTF.attrType = "gene_id", useMetaFeatures = T, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+if(!exists("P42.refseq.counts")){
+  P42.refseq.counts <- featureCounts(files = "./NEW_ARTDECO_ANALYSIS/ARTDeco_input/P42.bam", annot.ext = "./mm10.ncbiRefSeq.transcripts.THENIA.gtf", isGTFAnnotationFile = T, GTF.featureType = "exon", GTF.attrType = "gene_id", useMetaFeatures = T, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+}
 
-E16.refseq.counts <- featureCounts(files = "./E16.5.total_SRR11916388.shortened.mappedAligned.sortedByCoord.out.bam", annot.ext = "./mm10.ncbiRefSeq.transcripts.THENIA.gtf", isGTFAnnotationFile = T, GTF.featureType = "exon", GTF.attrType = "gene_id", useMetaFeatures = T, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+if(!exists("E16.refseq.counts")){
+  E16.refseq.counts <- featureCounts(files = "./NEW_ARTDECO_ANALYSIS/ARTDeco_input/E16_5.bam", annot.ext = "./mm10.ncbiRefSeq.transcripts.THENIA.gtf", isGTFAnnotationFile = T, GTF.featureType = "exon", GTF.attrType = "gene_id", useMetaFeatures = T, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+}
 
-E16.ensembl.counts <- featureCounts(files = "./E16.5.total_SRR11916388.shortened.mappedAligned.sortedByCoord.out.bam", annot.ext = "./Mus_musculus.GRCm38.102.gtf", isGTFAnnotationFile = T, GTF.featureType = "exon", GTF.attrType = "gene_id", useMetaFeatures = T, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
-
+save.image(file = "./data/tk_59_environment.Rdata")
 ```
 
 ```{r}
 genes_of_interest <- unlist(Mili_prepach_gene3end_regions$Gene_ovrlp)
-subset(P14.refseq.counts$counts, rownames(P14.refseq.counts$counts) %in% genes_of_interest)
+#subset(P14.refseq.counts$counts, rownames(P14.refseq.counts$counts) %in% genes_of_interest)
 
 ```
 
@@ -203,6 +251,10 @@ P14.counts <- normalize_by_TPM(read_counts_column = P14.refseq.counts$counts,
                                annotation_file = "./mm10.ncbiRefSeq.transcripts.gtf", 
                                annot_file_format = 'gtf')
 
+P42.counts <- normalize_by_TPM(read_counts_column = P42.refseq.counts$counts,
+                               annotation_file = "./mm10.ncbiRefSeq.transcripts.gtf", 
+                               annot_file_format = 'gtf')
+
 E16.counts <- normalize_by_TPM(read_counts_column = E16.refseq.counts$counts,
                                annotation_file = "./mm10.ncbiRefSeq.transcripts.gtf", 
                                annot_file_format = 'gtf')
@@ -210,18 +262,29 @@ E16.counts <- normalize_by_TPM(read_counts_column = E16.refseq.counts$counts,
 
 ```
 
-### Subset genes of interest
+#### Subset genes of interest
 ```{r}
-P14.counts.GoI <- filter(P14.counts, gene_id %in% genes_of_interest) %>% mutate (group = "P14.GoI")
+
+top10_GoI <- c("Zim2","D10Wsu102e","Gan","Elk4","Eif4ebp2","Dyrk1b","Zbtb37","Myl10","Frmd8","E130317F20Rik")
+
+# Keep top-10 genes of interest
+P14.counts.GoI <- filter(P14.counts, gene_id %in% top10_GoI) %>% mutate (group = "P14.GoI")
 P14.counts.not_GoI <- filter(P14.counts, ! gene_id %in% genes_of_interest) %>% mutate (group = "P14.not_GoI")
-E16.counts.GoI <- filter(E16.counts, gene_id %in% genes_of_interest) %>% mutate (group = "E16.GoI")
+
+P42.counts.GoI <- filter(P42.counts, gene_id %in% top10_GoI) %>% mutate (group = "P42.GoI")
+P42.counts.not_GoI <- filter(P42.counts, ! gene_id %in% genes_of_interest) %>% mutate (group = "P42.not_GoI")
+
+E16.counts.GoI <- filter(E16.counts, gene_id %in% top10_GoI) %>% mutate (group = "E16.GoI")
 E16.counts.not_GoI <- filter(E16.counts, ! gene_id %in% genes_of_interest) %>% mutate (group = "E16._not_GoI")
 
 # Append all tibbles
-combined_counts <- rbind(P14.counts.GoI,P14.counts.not_GoI,E16.counts.GoI,E16.counts.not_GoI)
+combined_counts <- rbind(P14.counts.GoI,P14.counts.not_GoI,P42.counts.GoI,P42.counts.not_GoI,E16.counts.GoI,E16.counts.not_GoI)
+
+
+
 ```
 
-### Plot correlation GoI between P14 and E16
+#### Plot correlation GoI between P14 and E16
 ```{r}
 library(ggplot2)
 library(ggpubr)
@@ -237,12 +300,12 @@ p1 <- join_counts %>% ggscatter(x = "fpkm.x",
                                 size = 0.5, 
                                 shape = 20, palette = "viridis",
                                 add = "reg.line"
-                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 1) 
                        
 ggsave2(filename = "E16Int_vs_P14Int_FPKM_corr.pdf", plot = p1, path = "./Plots")
 p1
 
-my_comparisons <- list( c("E16.GoI","E16._not_GoI"), c("P14.GoI", "P14.not_GoI"))
+my_comparisons <- list( c("E16.GoI","E16._not_GoI"), c("P14.GoI", "P14.not_GoI"), c("P42.GoI", "P42.not_GoI"))
 
 p2 <- combined_counts %>% ggviolin(x="group", 
                                   y="tpm", 
@@ -250,7 +313,8 @@ p2 <- combined_counts %>% ggviolin(x="group",
                                   draw_quantiles = T,
                                   add = "boxplot") + 
                                   stat_compare_means(comparisons = my_comparisons) +
-                                  scale_y_log10() 
+                                  scale_y_log10() + scale_fill_viridis_d(option = "D") + 
+                        labs(caption = "GoI = Top 10 genes")
 
 ggsave2(filename = "Int_vs_nonInt_genes_per_group.pdf", plot = p2, path = "./Plots")
 p2
@@ -259,55 +323,71 @@ p2
 
 # Make cluster expression tibble
 ```{r}
+M <- Mili_prepach_gene3end_regions
 clust_expr_fpkm.tb <-  tibble(gene_id=sapply(M$Gene_ovrlp,"[[",1), fpkm=M$all_reads_primary_alignments_FPKM)
+
+# Collapse clusters mapping to the same gene and add up theirs fpkms
+clust_expr_fpkm.tb <- clust_expr_fpkm.tb %>% group_by(gene_id) %>% summarise(fpkm=sum(fpkm))
 
 E16.counts.GoI_clust <- inner_join(x = E16.counts.GoI, y = clust_expr_fpkm.tb, by = "gene_id") %>% mutate(group = 'E16')
 
 P14.counts.GoI_clust <- inner_join(x = P14.counts.GoI, y = clust_expr_fpkm.tb, by = "gene_id") %>% mutate(group = 'P14')
 
+P42.counts.GoI_clust <- inner_join(x = P42.counts.GoI, y = clust_expr_fpkm.tb, by = "gene_id") %>% mutate(group = 'P42')
 
 e16.p <- E16.counts.GoI_clust %>% ggscatter(x = "fpkm.x", 
                                 y = "fpkm.y", 
                                 xlab = "E16 genes of Interest FPKM (log10)",
                                 ylab = "cluster all reads primary FPKM (log10)", 
-                                size = 0.5, 
+                                size = 1, 
                                 shape = 20, palette = "jco",
                                 add = "reg.line", color = "group"
-                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 1) 
 
 p14.p <- P14.counts.GoI_clust %>% ggscatter(x = "fpkm.x", 
                                 y = "fpkm.y", 
                                 xlab = "P14 genes of Interest FPKM (log10)",
                                 ylab = "cluster all reads primary FPKM (log10)", 
-                                size = 0.5, 
+                                size = 1, 
                                 shape = 20, palette = "jco",
                                 add = "reg.line", color = "group"
-                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 1) 
+
+p42.p <- P42.counts.GoI_clust %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "P42 genes of Interest FPKM (log10)",
+                                ylab = "cluster all reads primary FPKM (log10)", 
+                                size = 1, 
+                                shape = 20, palette = "jco",
+                                add = "reg.line", color = "group"
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 1) 
 
 ggsave2(filename = "E16Int_vs_clusters.pdf", plot = e16.p, path = "./Plots")
 ggsave2(filename = "P14Int_vs_clusters.pdf", plot = p14.p, path = "./Plots")
+ggsave2(filename = "P42Int_vs_clusters.pdf", plot = p42.p, path = "./Plots")
 
 e16.p
 p14.p
+p42.p
 
-E16_P14.counts.GoI_clust <- rbind(E16.counts.GoI_clust, P14.counts.GoI_clust)
+E16_P14_P42.counts.GoI_clust <- rbind(E16.counts.GoI_clust, P14.counts.GoI_clust, P42.counts.GoI_clust)
 
-e16p14.p <- E16_P14.counts.GoI_clust %>% ggscatter(x = "fpkm.x", 
+e16p14p42.p <- E16_P14_P42.counts.GoI_clust %>% ggscatter(x = "fpkm.x", 
                                 y = "fpkm.y", 
                                 xlab = "genes of Interest FPKM (log10)",
                                 ylab = "cluster all reads primary FPKM (log10)", 
-                                size = 0.5, 
+                                size = 3, 
                                 shape = 20, palette = "jco",
                                 color = "group"
                                 ) + scale_x_log10() + scale_y_log10()
 
-ggsave2(filename = "E16P14Int_vs_clusters.pdf", plot = e16p14.p, path = "./Plots")
-e16p14.p
+ggsave2(filename = "E16P14P42Int_vs_clusters.pdf", plot = e16p14p42.p, path = "./Plots")
+e16p14p42.p
 ```
 
 
-### Quantify RNAseq-based expression at cluster's intervals
-```{r}
+#### Quantify RNAseq-based expression at cluster's intervals
+```{r message=FALSE, warning=FALSE, include=FALSE, eval=TRUE}
 # Make annotation DF
 ann.df <- tibble(GeneID=sapply(M$Gene_ovrlp,"[[",1), 
                  Chr=as.vector(seqnames(M)), 
@@ -317,14 +397,28 @@ ann.df <- tibble(GeneID=sapply(M$Gene_ovrlp,"[[",1),
                  )
 
 # Count reads per meta-feature
-P14.cluster.counts <- featureCounts(files = "./P14.PS.SRR7760359.mappedAligned.sortedByCoord.out.bam", annot.ext = as.data.frame(ann.df), isGTFAnnotationFile = F, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+if(!exists("P14.cluster.counts")){
+  P14.cluster.counts <- featureCounts(files = "./NEW_ARTDECO_ANALYSIS/ARTDeco_input/P14.bam", annot.ext = as.data.frame(ann.df), isGTFAnnotationFile = F, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+}
 
-E16.cluster.counts <- featureCounts(files = "./E16.5.total_SRR11916388.shortened.mappedAligned.sortedByCoord.out.bam", annot.ext = ann.df, isGTFAnnotationFile = F, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 0, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+if(!exists("P42.cluster.counts")){
+  P42.cluster.counts <- featureCounts(files = "./NEW_ARTDECO_ANALYSIS/ARTDeco_input/P42.bam", annot.ext = as.data.frame(ann.df), isGTFAnnotationFile = F, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 2, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+}
+
+if(!exists("E16.cluster.counts")){
+  E16.cluster.counts <- featureCounts(files = "./NEW_ARTDECO_ANALYSIS/ARTDeco_input/E16_5.bam", annot.ext = ann.df, isGTFAnnotationFile = F, fraction = T, largestOverlap = T, primaryOnly = T, strandSpecific = 0, isPairedEnd = T, countReadPairs = T, requireBothEndsMapped = F)
+}
+
+save.image(file = "./data/tk_59_environment.Rdata")
 ```
 
-### Normalize cluster's read counts 
+#### Normalize cluster's read counts 
 ```{r}
 P14.cluster.norm.counts <- normalize_by_TPM(read_counts_column = P14.cluster.counts$counts,
+                               annotation_file = ann.df, 
+                               annot_file_format = 'custom')
+
+P42.cluster.norm.counts <- normalize_by_TPM(read_counts_column = P42.cluster.counts$counts,
                                annotation_file = ann.df, 
                                annot_file_format = 'custom')
 
@@ -334,61 +428,79 @@ E16.cluster.norm.counts <- normalize_by_TPM(read_counts_column = E16.cluster.cou
 # Merge cluster expression tibble with long-RNAseq-cluster norm counts
 P14.counts.long_short_clust <- inner_join(x = P14.cluster.norm.counts, y = clust_expr_fpkm.tb, by = "gene_id") %>% mutate(group = 'P14')
 
+P42.counts.long_short_clust <- inner_join(x = P42.cluster.norm.counts, y = clust_expr_fpkm.tb, by = "gene_id") %>% mutate(group = 'P42')
+
 E16.counts.long_short_clust <- inner_join(x = E16.cluster.norm.counts, y = clust_expr_fpkm.tb, by = "gene_id") %>% mutate(group = 'E16')
 ```
 
-### Plot correlations between long-RNAseq-based clusters and short-RNAseq-based clusters
+#### Plot correlations between long-RNAseq-based clusters and short-RNAseq-based clusters (top 100 clusters sorted based on their FPM counts for piRNAs)
 ```{r}
 # Plot correlations
-p14.clust_vs_clust.p1 <- P14.counts.long_short_clust %>% ggscatter(x = "fpkm.x", 
+p14.clust_vs_clust.p1 <- head(P14.counts.long_short_clust, n=100) %>% ggscatter(x = "fpkm.x", 
                                 y = "fpkm.y", 
                                 xlab = "P14 long-RNAseq cluster FPKM (log10)",
-                                ylab = "short-RNAseq cluster all reads primary FPKM (log10)", 
-                                size = 0.5, 
+                                ylab = "short-RNAseq cluster all reads primary FPKM (log10)",
+                                title = "Top 100 clusters",
+                                size = 1, 
                                 shape = 20, palette = "jco",
                                 add = "reg.line", color = "group"
-                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 1) 
                        
+p42.clust_vs_clust.p1 <- head(P42.counts.long_short_clust, n=100) %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "P42 long-RNAseq cluster FPKM (log10)",
+                                ylab = "short-RNAseq cluster all reads primary FPKM (log10)",
+                                title = "Top 100 clusters",
+                                size = 1, 
+                                shape = 20, palette = "jco",
+                                add = "reg.line", color = "group"
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 1) 
 
-e16.clust_vs_clust.p1 <- E16.counts.long_short_clust %>% ggscatter(x = "fpkm.x", 
+e16.clust_vs_clust.p1 <- head(E16.counts.long_short_clust, n=100) %>% ggscatter(x = "fpkm.x", 
                                 y = "fpkm.y", 
                                 xlab = "E16 long-RNAseq cluster FPKM (log10)",
                                 ylab = "short-RNAseq cluster all reads primary FPKM (log10)", 
-                                size = 0.5, 
+                                title = "Top 100 clusters",
+                                size = 1, 
                                 shape = 20, palette = "jco",
                                 add = "reg.line", color = "group"
-                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 1) 
                        
-# Append E16 and P14 tibbles
-E16_P14.counts.long_short_clust <- rbind(E16.counts.long_short_clust, P14.counts.long_short_clust)
+# Append E16, P42 and P14 tibbles
+E16_P14_P42.counts.long_short_clust <- rbind(head(E16.counts.long_short_clust, n=100), head(P14.counts.long_short_clust,n=100), head(P42.counts.long_short_clust,n=100))
 
-e16p14.clust_vs_clust.p1 <- E16_P14.counts.long_short_clust %>% ggscatter(x = "fpkm.x", 
+e16p14p42.clust_vs_clust.p1 <- E16_P14_P42.counts.long_short_clust %>% ggscatter(x = "fpkm.x", 
                                 y = "fpkm.y", 
                                 xlab = "long-RNAseq cluster FPKM (log10)",
-                                ylab = "short-RNAseq cluster all reads primary FPKM (log10)", 
-                                size = 0.5, 
+                                ylab = "short-RNAseq cluster all reads primary FPKM (log10)",
+                                title = "Top 100 clusters",
+                                size = 3, 
                                 shape = 20, palette = "jco",
                                 color = "group"
                                 ) + scale_x_log10() + scale_y_log10()
 
 ggsave2(filename = "P14_long_vs_short_clust.pdf", plot = p14.clust_vs_clust.p1, path = "./Plots")
+ggsave2(filename = "P42_long_vs_short_clust.pdf", plot = p42.clust_vs_clust.p1, path = "./Plots")
 ggsave2(filename = "E16_long_vs_short_clust.pdf", plot = e16.clust_vs_clust.p1, path = "./Plots")
-ggsave2(filename = "E16P14_long_vs_short_clust.pdf", plot = e16p14.clust_vs_clust.p1, path = "./Plots")
+ggsave2(filename = "E16P14P42_long_vs_short_clust.pdf", plot = e16p14p42.clust_vs_clust.p1, path = "./Plots")
 
 p14.clust_vs_clust.p1
+p42.clust_vs_clust.p1
 e16.clust_vs_clust.p1
-e16p14.clust_vs_clust.p1
+e16p14p42.clust_vs_clust.p1
 ```
 
-### Correlation between long-RNAseq genes and long-RNAseq clusters
+#### Correlation between long-RNAseq genes and long-RNAseq clusters
 ```{r}
 p14_long_genes_clusters <- inner_join(x = P14.counts, y = P14.cluster.norm.counts, by = "gene_id") %>% mutate(group = 'P14')
+
+p42_long_genes_clusters <- inner_join(x = P42.counts, y = P42.cluster.norm.counts, by = "gene_id") %>% mutate(group = 'P42')
 
 e16_long_genes_clusters <- inner_join(x = E16.counts, y = E16.cluster.norm.counts, by = "gene_id") %>% mutate(group = 'E16')
 ```
 
-### Plots
-```{r}
+#### Plots
+```{r warning=FALSE}
 p14.long_genes_clusters.p1 <- p14_long_genes_clusters %>% ggscatter(x = "fpkm.x", 
                                 y = "fpkm.y", 
                                 xlab = "P14 long-RNAseq genes FPKM (log10)",
@@ -396,7 +508,16 @@ p14.long_genes_clusters.p1 <- p14_long_genes_clusters %>% ggscatter(x = "fpkm.x"
                                 size = 0.5, 
                                 shape = 20, palette = "jco",
                                 add = "reg.line", color = "group"
-                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 1) 
+
+p24.long_genes_clusters.p1 <- p42_long_genes_clusters %>% ggscatter(x = "fpkm.x", 
+                                y = "fpkm.y", 
+                                xlab = "P42 long-RNAseq genes FPKM (log10)",
+                                ylab = "P42 long-RNAseq cluster FPKM (log10)", 
+                                size = 0.5, 
+                                shape = 20, palette = "jco",
+                                add = "reg.line", color = "group"
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 1) 
 
 e16.long_genes_clusters.p1 <- e16_long_genes_clusters %>% ggscatter(x = "fpkm.x", 
                                 y = "fpkm.y", 
@@ -405,17 +526,253 @@ e16.long_genes_clusters.p1 <- e16_long_genes_clusters %>% ggscatter(x = "fpkm.x"
                                 size = 0.5, 
                                 shape = 20, palette = "jco",
                                 add = "reg.line", color = "group"
-                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 3) 
+                                ) + scale_x_log10() + scale_y_log10() + stat_cor(label.x = 1) 
 
 ggsave2(filename = "P14_long_genes_clusters.pdf", plot = p14.long_genes_clusters.p1, path = "./Plots", width = 12)
+
+ggsave2(filename = "P42_long_genes_clusters.pdf", plot = p24.long_genes_clusters.p1, path = "./Plots", width = 12)
+
 ggsave2(filename = "E16_long_genes_clusters.pdf", plot = e16.long_genes_clusters.p1, path = "./Plots")
 
 p14.long_genes_clusters.p1
+p24.long_genes_clusters.p1
 e16.long_genes_clusters.p1
 
 ```
 
-### R session information
+
+## Questions derived from meeting with Astrid
+
+```{r}
+# Load predicted DOGs
+dog_prediction_path <- "/Users/lorenziha/Documents/DKBIOCORE_LOCAL/TK_59/NEW_ARTDECO_ANALYSIS/ARTDECO_DIR_FPKM_0.003_dog2kb_wind500bp_dogcov0.05_doglen2kb/dogs/"
+
+P14.dogs <- read_delim(file = paste0(dog_prediction_path, "P14.dogs.fpkm.txt"), col_names = c("gene_id","length","fpkm"), col_types = "cid", skip = 1)
+
+P42.dogs <- read_delim(file = paste0(dog_prediction_path, "P42.dogs.fpkm.txt"), col_names = c("gene_id","length","fpkm"), col_types = "cid", skip = 1)
+
+E16.dogs <- read_delim(file = paste0(dog_prediction_path, "E16_5.dogs.fpkm.txt"), col_names = c("gene_id","length","fpkm"), col_types = "cid", skip = 1)
+
+```
+
+
+#### 1- Fraction of expressed genes (> 5 reads per gene) with DOGs for each developmental stage.
+```{r}
+P14.expressed_genes <- filter(P14.counts, read_counts > 5)
+P42.expressed_genes <- filter(P42.counts, read_counts > 5)
+E16.expressed_genes <- filter(E16.counts, read_counts > 5)
+
+results <- tibble(Description="Fraction of expressed genes (> 5 reads per gene) with predicted DOGs (%)",
+       P14=round(100*length(P14.dogs$gene_id)/length(P14.expressed_genes$gene_id), 2),
+       P42=round(100*length(P42.dogs$gene_id)/length(P42.expressed_genes$gene_id), 2),
+       E16=round(100*length(E16.dogs$gene_id)/length(E16.expressed_genes$gene_id), 2)
+       )
+
+# results %>% ggplot(aes(bam, value, fill=bam)) + geom_bar(stat="identity") + facet_wrap(~bam_file, dir="h", strip.position="top") + theme_bw() + xlab("BAM files") + ylab("Counts") + scale_fill_viridis_d(option = "D")
+
+results.tbl <-  tibble(stage=colnames(results)[2:4],values=t(results[,2:4])[,1])
+
+p <- results.tbl %>% ggplot(aes(stage, values, fill=stage)) + geom_bar(stat="identity") + theme_bw() + xlab("Developmental stages") + ylab("Fraction of expressed genes (>5 reads/gene) with DOGs (%)") + scale_fill_viridis_d(option = "D")
+
+ggsave2(filename = "./Plots/fract_exp_genes_with_dogs.pdf", plot = p, width = 4, height = 8)
+
+print(results)
+
+p
+```
+
+#### 2- Distribution of DOGs across their size
+```{r}
+library(easyGgplot2)
+library(ggprism)
+require(graphics)
+
+# Append dog predictions for all developmental stages
+all_stages.dogs <- tibble(
+    rbind(mutate(P14.dogs, stage="P14"),
+          mutate(P42.dogs, stage="P42"),
+          mutate(E16.dogs, stage="E16.5")
+        )
+    )
+
+hist.p1 <- ggplot(all_stages.dogs,aes(x=length, fill=stage)) +
+  geom_histogram(breaks=c(seq(0,19999,2000),seq(20000,150000,10000))) +
+  scale_x_continuous(breaks=seq(0,150000,20000),
+                     minor_breaks = c(seq(0,19999,2000),seq(20000,150000,10000)),
+                     guide = "prism_minor"
+                     ) + 
+  xlab("DOG length") + ylab("Counts") + labs(title = "Distribution of DOG lengths across developmental stages") + 
+  facet_wrap(~stage, dir="v", strip.position="right") +
+  theme_bw() + scale_fill_manual(values=hcl.colors(3, "viridis"))
+
+
+ggsave2(filename = "./Plots/dog_distrib_1.pdf", plot = hist.p1)
+
+hist.p1
+```
+#### Summary of predicted DOGs per developmental stage
+```{r}
+dog_summary_counts.p <- all_stages.dogs %>% ggplot(aes(x=stage, fill=stage)) +
+    geom_bar() + 
+    xlab("Developmental stage") + ylab("DOG counts") + 
+    labs(title = "Number of DOGs predicted\nacross developmental stages") +
+    theme_bw() + scale_fill_viridis_d(option = "D")
+
+dog_summary_sums.p <-all_stages.dogs %>% ggplot(aes(x=stage, y=length, fill=stage, color=NULL)) +
+    geom_bar(stat="identity") + 
+    xlab("Developmental stage") + ylab("Total DOG length (bp)") + 
+    labs(title = "Total length of DOGs predicted\nacross developmental stages") +
+    theme_bw() + scale_fill_viridis_d(option = "D")
+
+ggsave2(filename = "./Plots/dog_counts_per_stage.pdf", plot = dog_summary_counts.p, width = 4, height = 8)
+ggsave2(filename = "./Plots/total_dog_lengths_per_stage.pdf", plot = dog_summary_sums.p, width = 4, height = 8)
+
+dog_summary_counts.p
+dog_summary_sums.p
+```
+
+
+#### Venn diagram of shared DOGs across developmental stages
+```{r}
+library("ggVennDiagram")
+
+all_stages.across.dogs <- full_join(P14.dogs, P42.dogs, by="gene_id") %>% full_join(E16.dogs, by="gene_id")
+colnames(all_stages.across.dogs) <- c("gene_id","length.P14","fpkm.P14","length.P42","fpkm.P42","length.E16","fpkm.E16")
+
+all_stages.across.dogs <- all_stages.across.dogs %>% 
+                            mutate(P14_E16=log2(length.P14/length.E16)) %>% 
+                            mutate(P42_E16=log2(length.P42/length.E16)) %>% 
+                            mutate(P14_P42=log2(length.P14/length.P42))
+
+venn <- list()
+min_dog_length = 100
+venn$P14 <- filter(all_stages.across.dogs, P14_E16 >= 1  | (length.P14 > min_dog_length & is.na(length.E16) ))$gene_id
+venn$E16 <- filter(all_stages.across.dogs, P14_E16 <= -1 | (length.E16 > min_dog_length & is.na(length.P14) ))$gene_id
+
+venn_1.p <- ggVennDiagram(venn,label_alpha = 0, label_color = "white") +
+  #ggplot2::scale_fill_gradient(low="purple3",high = "yellow3") + 
+  labs(caption = "DOGs >= 100 bp present in one stage only or twice as long as in the other stage")
+
+
+venn_all.1000 <- list()
+min_dog_length = 1000
+venn_all.1000$P14 <- filter(all_stages.across.dogs, length.P14 > min_dog_length )$gene_id
+venn_all.1000$P42 <- filter(all_stages.across.dogs, length.P42 > min_dog_length )$gene_id
+venn_all.1000$E16 <- filter(all_stages.across.dogs, length.E16 > min_dog_length )$gene_id
+
+venn_all.p <- ggVennDiagram(venn_all.1000,label_alpha = 0, label_color = "white") +
+  #ggplot2::scale_fill_gradient(low="purple3",high = "yellow3") + 
+  labs(caption = "DOGs > 1000 bp")
+
+ggsave2(filename = "./Plots/comparative_venn_p14_e16.pdf", plot = venn_1.p)
+ggsave2(filename = "./Plots/comparative_venn_p14_e16_p42_dog1000.pdf", plot = venn_all.p)
+
+venn_1.p
+venn_all.p
+```
+
+#### Fraction of DOGs that produce piRNAs
+```{r}
+
+# As venn diagram
+venn_fraction <- venn_all.1000
+venn_fraction$piRNA_clusters <- sapply(M$Gene_ovrlp,"[[",1)
+
+venn_fraction.p <- ggVennDiagram(venn_fraction,label_alpha = 0, label_color = "white") +
+  #scale_fill_viridis_b(option = "D") + # ggplot2::scale_fill_gradient(low="purple3",high = "yellow3")
+  labs(caption = "DOGs > 1000 bp")
+
+ggsave2(filename = "./Plots/comparative_venn_p14_e16_p42_fraction_piRNA_clusters.pdf", 
+        plot = venn_fraction.p)
+
+venn_fraction.p
+
+# As bar plot
+
+x <- rbind(
+  tibble(type=ifelse(venn_fraction$P14 %in% venn_fraction$piRNA_clusters,"piRNA_encoding","Other"), stage="P14"),
+  tibble(type=ifelse(venn_fraction$P42 %in% venn_fraction$piRNA_clusters,"piRNA_encoding","Other"), stage="P42"),
+  tibble(type=ifelse(venn_fraction$E16 %in% venn_fraction$piRNA_clusters,"piRNA_encoding","Other"), stage="E16")
+)
+
+barchar_proportion.p <- x %>% ggplot(aes(stage, fill=type)) + geom_bar(position = "fill") +
+  scale_fill_viridis_d(option = "D") +
+  ylab("Proportion of piRNA-encoding DOGs (> 1000 bp)") +
+  xlab("Developmental stage") +
+  theme_bw()
+
+barchar_count.p <- x %>% ggplot(aes(stage, fill=type)) + geom_bar() +
+  scale_fill_viridis_d(option = "D") +
+  ylab("Proportion of piRNA-encoding DOGs (> 1000 bp)") + 
+  xlab("Developmental stage") +
+  theme_bw()
+
+
+ggsave2(filename = "./Plots/comparative_barchar_p14_e16_p42_proportion_of_piRNA_clusters.pdf", 
+        plot = barchar_proportion.p, width = 4, height = 8) 
+
+ggsave2(filename = "./Plots/comparative_barchar_p14_e16_p42_count_of_piRNA_clusters.pdf", 
+        plot = barchar_count.p, width = 4, height = 8) 
+
+barchar_proportion.p
+barchar_count.p
+```
+
+#### Quantify total number of predicted DOGs per developmental stage
+```{r}
+my_predictions_dir <- "NEW_ARTDECO_ANALYSIS/ARTDECO_DIR_FPKM_0.003_dog2kb_wind500bp_dogcov0.05_doglen2kb"
+e16.tbl <- read_delim(file = paste0("./",my_predictions_dir,"/dogs/E16_5.dogs.bed"), col_names = c("Chrom","End5","End3","Gene","Score","Strand"))
+p14.tbl <- read_delim(file = paste0("./",my_predictions_dir,"/dogs/P14.dogs.bed"), col_names = c("Chrom","End5","End3","Gene","Score","Strand"))
+p42.tbl <- read_delim(file = paste0("./",my_predictions_dir,"/dogs/P42.dogs.bed"), col_names = c("Chrom","End5","End3","Gene","Score","Strand"))
+
+
+e16.tbl <- e16.tbl %>% mutate(Dev_stage = "E16")
+p14.tbl <- p14.tbl %>% mutate(Dev_stage = "P14")
+p42.tbl <- p42.tbl %>% mutate(Dev_stage = "P42")
+
+all.tbl <- e16.tbl %>% bind_rows(p14.tbl, p42.tbl)
+all.tbl <- all.tbl %>% mutate(Length=End3-End5)
+```
+
+#### Fig 4: Number of predicted DOGs per chromosome
+```{r}
+p4 <- all.tbl %>% group_by(Dev_stage, Chrom) %>% count() %>% 
+  ggbarplot(x="Dev_stage", y="n", ylab = "Number of predicted DOGs", xlab = "Developmental stage", 
+            fill = "Dev_stage", ggtheme = theme_classic(), facet.by = "Chrom") +
+    scale_fill_viridis_d(option = "D")
+
+ggsave2(filename = "./Plots/Fig_4.pdf", plot = p4, width = 5, height = 8)
+p4
+```
+
+
+#### Fig 5: Normalized counts of predicted DOGs per chromosome
+```{r}
+total_counts <- list()
+e16_total_dog_counts <- filter(all.tbl %>% group_by(Dev_stage) %>% count(), Dev_stage=="E16")$n
+p14_total_dog_counts <- filter(all.tbl %>% group_by(Dev_stage) %>% count(), Dev_stage=="P14")$n
+p42_total_dog_counts <- filter(all.tbl %>% group_by(Dev_stage) %>% count(), Dev_stage=="P42")$n
+total_counts['E16'] <- e16_total_dog_counts
+total_counts['P14'] <- p14_total_dog_counts
+total_counts['P42'] <- p42_total_dog_counts
+
+p5 <- all.tbl %>% group_by(Dev_stage, Chrom) %>% count() %>% mutate(Total_counts = total_counts[[Dev_stage]]) %>% mutate(Norm_counts = 100 * (n/Total_counts)) %>% 
+  ggbarplot(x="Dev_stage", y="Norm_counts", ylab = "Normalized number of predicted DOGs", xlab = "Developmental stage", 
+            fill = "Dev_stage", ggtheme = theme_classic(), facet.by = "Chrom") +
+    scale_fill_viridis_d(option = "D")
+
+ggsave2(filename = "./Plots/Fig_5.pdf", plot = p5, width = 5, height = 8)
+p5
+```
+
+
+#### Save project's data
+```{r}
+save.image(file = "./data/tk_59_environment.Rdata")
+```
+
+
+#### R session information
 ```{r}
 sessionInfo()
 ```
